@@ -8,15 +8,15 @@ on:
     paths: ['app/**', 'Containerfile', '.github/workflows/build.yml']
   workflow_dispatch:
 
-# Repo configuration for the gated full build (set these under
-# Settings → Secrets and variables → Actions):
+# Repo configuration for the gated full build (Settings → Secrets and variables
+# → Actions):
 #   secret  NGC_CLI_API_KEY   — your NGC personal API key (already added)
-#   var     NGC_ORG           — your NGC org (e.g. "abcd1234")
-#   var     NGC_SDK_RESOURCE  — resource holding your assembled sdk.tar.gz,
-#                               e.g. "blucast-sdk:1.0" (org-relative, name:version)
-# Populate the resource once from your working local SDK:
+#   var     NGC_ORG           — your NGC org, e.g. "0985270465437966" (required)
+#   var     NGC_SDK_VERSION   — OPTIONAL; defaults to 1.0. Bump when you re-upload.
+# The resource NAME ("blucast-sdk") is a fixed convention, not a variable.
+# Populate it once from your working local SDK:
 #   tar -czf sdk.tar.gz sdk/         # sdk/ has VideoFX AudioFX TensorRT-8.5.1.7 cudnn
-#   ngc registry resource upload-version "<org>/blucast-sdk:1.0" --source sdk.tar.gz
+#   ngc registry resource upload-version "<NGC_ORG>/blucast-sdk:1.0" --source sdk.tar.gz
 
 jobs:
   # ── Always-on, SDK-free checks (run on every push & PR, incl. forks) ──────
@@ -130,10 +130,9 @@ jobs:
       - name: Validate configuration
         env:
           NGC_ORG: ${{ vars.NGC_ORG }}
-          NGC_SDK_RESOURCE: ${{ vars.NGC_SDK_RESOURCE }}
         run: |
-          if [ -z "$NGC_ORG" ] || [ -z "$NGC_SDK_RESOURCE" ]; then
-            echo "::error::Set repo variables NGC_ORG and NGC_SDK_RESOURCE (see build.yml header)."
+          if [ -z "$NGC_ORG" ]; then
+            echo "::error::Set repo variable NGC_ORG (see build.yml header)."
             exit 1
           fi
 
@@ -141,7 +140,7 @@ jobs:
         with:
           ngc-api-key: ${{ secrets.NGC_CLI_API_KEY }}
           ngc-org: ${{ vars.NGC_ORG }}
-          ngc-resource: ${{ vars.NGC_SDK_RESOURCE }}
+          sdk-version: ${{ vars.NGC_SDK_VERSION || '1.0' }}
           image-tag: blucast:ci
 
   # ── GPU runtime smoke test (opt-in; needs a self-hosted GPU runner) ───────
@@ -164,7 +163,7 @@ jobs:
         with:
           ngc-api-key: ${{ secrets.NGC_CLI_API_KEY }}
           ngc-org: ${{ vars.NGC_ORG }}
-          ngc-resource: ${{ vars.NGC_SDK_RESOURCE }}
+          sdk-version: ${{ vars.NGC_SDK_VERSION || '1.0' }}
           image-tag: blucast:smoke
 
       - name: GPU + virtual devices visible

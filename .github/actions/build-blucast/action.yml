@@ -11,11 +11,16 @@ inputs:
     description: NGC personal API key (pass secrets.NGC_CLI_API_KEY).
     required: true
   ngc-org:
-    description: NGC org that owns the SDK resource.
+    description: NGC org that owns the SDK resource (account-specific).
     required: true
-  ngc-resource:
-    description: "Resource holding the assembled sdk.tar.gz, e.g. blucast-sdk:1.0"
-    required: true
+  sdk-name:
+    description: Private NGC resource name holding the assembled sdk.tar.gz. Fixed convention.
+    required: false
+    default: blucast-sdk
+  sdk-version:
+    description: Version of that resource (bump when you re-upload the SDK bundle).
+    required: false
+    default: "1.0"
   image-tag:
     description: Tag for the built image.
     required: false
@@ -37,8 +42,9 @@ runs:
       env:
         NGC_CLI_API_KEY: ${{ inputs.ngc-api-key }}
       run: |
+        resource="${{ inputs.ngc-org }}/${{ inputs.sdk-name }}:${{ inputs.sdk-version }}"
         ngc config set --api-key "$NGC_CLI_API_KEY" --format_type json --org "${{ inputs.ngc-org }}" >/dev/null
-        ngc registry resource download-version "${{ inputs.ngc-org }}/${{ inputs.ngc-resource }}" --dest ./ngc-sdk
+        ngc registry resource download-version "$resource" --dest ./ngc-sdk
         tarball="$(find ./ngc-sdk -name 'sdk.tar.gz' | head -1)"
         [ -n "$tarball" ] || { echo "::error::sdk.tar.gz not found in the NGC resource."; exit 1; }
         tar -xzf "$tarball"
