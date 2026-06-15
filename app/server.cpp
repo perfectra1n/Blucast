@@ -21,6 +21,9 @@
 #include "nvVideoEffects.h"
 #include "opencv2/opencv.hpp"
 
+#include "audio_io.h"
+#include "audio_processor.h"
+
 //  Paths ───────────────────────────────────────────────────────────────
 static const char *SHARED_DIR      = "/tmp/blucast";
 static const char *CMD_PIPE_PATH   = "/tmp/blucast/cmd.pipe";
@@ -29,6 +32,8 @@ static const char *PREVIEW_FILE    = "/tmp/blucast/preview.jpg";
 static const char *PREVIEW_TMP     = "/tmp/blucast/preview.jpg.tmp";
 static const char *PID_FILE        = "/tmp/blucast/server.pid";
 static const char *VCAM_DEVICE     = "/dev/video10";
+static const char *MIC_SINK        = "BluCast_Mic_Sink";   // null sink we write into
+static const char *AFX_MODEL_DIR   = "/usr/local/AudioFX/models";
 
 //  Global state
 static std::atomic<bool>  g_running{true};
@@ -47,6 +52,16 @@ static bool        g_deviceChanged = false;
 static std::mutex  g_bgMutex;
 static std::string g_bgFile;
 static bool        g_bgChanged = false;
+
+//  Audio state (mirrors the camera atomics above) ──────────────────────────
+static std::atomic<bool>  g_audioEnabled{false};
+static std::atomic<int>   g_audioMode{0};        // AMODE_NONE
+static std::atomic<float> g_audioIntensity{1.0f};
+static std::atomic<bool>  g_audioSettingsChanged{false};
+
+static std::mutex  g_audioDeviceMutex;
+static std::string g_audioDevice;                // pulse source name; "" = default mic
+static bool        g_audioDeviceChanged = false;
 
 //  Effect modes ────────────────────────────────────────────────────────
 enum EffectMode {
@@ -495,6 +510,21 @@ static void commandListener() {
                         g_cameraFps = fps;
                         g_cameraSettingsChanged = true;
                     }
+                } else if (cmd.rfind("AUDIO_ENABLE:", 0) == 0) {
+                    g_audioEnabled = (std::stoi(cmd.substr(13)) != 0);
+                } else if (cmd.rfind("AUDIO_MODE:", 0) == 0) {
+                    g_audioMode = std::stoi(cmd.substr(11));
+                    g_audioSettingsChanged = true;
+                } else if (cmd.rfind("AUDIO_INTENSITY:", 0) == 0) {
+                    g_audioIntensity = std::stof(cmd.substr(16));
+                    g_audioSettingsChanged = true;
+                } else if (cmd.rfind("AUDIO_DEVICE:", 0) == 0) {
+                    std::lock_guard<std::mutex> lock(g_audioDeviceMutex);
+                    std::string dev = cmd.substr(13);
+                    if (dev != g_audioDevice) {
+                        g_audioDevice = dev;
+                        g_audioDeviceChanged = true;
+                    }
                 }
 
                 line = strtok(nullptr, "\n");
@@ -529,6 +559,90 @@ static std::string autoDetectCamera() {
 // ══════════════════════════════════════════════════════════════════════════
 static void signalHandler(int) { g_running = false; }
 
+// ══════════════════════════════════════════════════════════════════════════
+// Audio loop (runs in its own thread, independent of the video loop)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Structure mirrors the video while(g_running) loop, but gated on
+// g_audioEnabled instead of camera consumers. Capture reads are variable
+// length, so we accumulate them into the fixed frame size NvAFX requires
+// before processing.
+static void audioLoop() {
+    AudioFXProcessor afx;
+    afx.init(AFX_MODEL_DIR);
+
+    AudioCapture cap;
+    VirtualMic   mic;
+
+    int         curMode = -1;
+    std::string curDevice;
+    bool        haveDevice = false;
+    std::vector<float> acc;          // accumulated input samples (mono)
+
+    while (g_running) {
+        if (!g_audioEnabled.load()) {
+            if (cap.isOpen()) cap.close();
+            if (mic.isOpen())  mic.writeSilence(afx.outSamplesPerFrame());
+            acc.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
+        // Device change → reopen capture (analog of g_deviceChanged).
+        {
+            std::lock_guard<std::mutex> lock(g_audioDeviceMutex);
+            if (g_audioDeviceChanged || !haveDevice) {
+                curDevice = g_audioDevice;
+                g_audioDeviceChanged = false;
+                haveDevice = true;
+                cap.close();
+                acc.clear();
+            }
+        }
+
+        // Mode / intensity change → (re)configure the effect.
+        if (g_audioSettingsChanged.exchange(false) || g_audioMode.load() != curMode) {
+            curMode = g_audioMode.load();
+            afx.setMode(curMode, g_audioIntensity.load());
+            // Rates may have changed; reopen I/O at the new geometry.
+            cap.close();
+            mic.close();
+            acc.clear();
+        }
+
+        if (!cap.isOpen() && !cap.open(curDevice, afx.inputSampleRate(), 1)) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+        if (!mic.isOpen() && !mic.open(MIC_SINK, afx.outputSampleRate(), 1)) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            continue;
+        }
+
+        // Read a chunk, accumulate, drain in fixed input-frame units.
+        const size_t kReadFrames = 512;
+        float tmp[kReadFrames];
+        if (!cap.read(tmp, kReadFrames)) {
+            cap.close();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        acc.insert(acc.end(), tmp, tmp + kReadFrames);
+
+        const size_t inFrame  = afx.inSamplesPerFrame();
+        const size_t outFrame = afx.outSamplesPerFrame();
+        std::vector<float> out(outFrame);
+        while (acc.size() >= inFrame) {
+            afx.process(acc.data(), out.data());
+            mic.writeFrame(out.data(), outFrame);
+            acc.erase(acc.begin(), acc.begin() + inFrame);
+        }
+    }
+
+    cap.close();
+    mic.close();
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT,  signalHandler);
     signal(SIGTERM, signalHandler);
@@ -554,12 +668,14 @@ int main(int argc, char **argv) {
     writePidFile();
 
     std::thread cmdThread(commandListener);
+    std::thread audioThread(audioLoop);
 
     VideoFXProcessor vfx;
     if (!vfx.init(modelDir, aiMode)) {
         std::cerr << "Failed to initialize VideoFX" << std::endl;
         g_running = false;
         cmdThread.join();
+        audioThread.join();
         return 1;
     }
 
@@ -703,6 +819,7 @@ int main(int argc, char **argv) {
 
     g_running = false;
     cmdThread.join();
+    audioThread.join();
     std::cout << "BluCast closed." << std::endl;
     return 0;
 }

@@ -30,7 +30,21 @@ done_msg "Containers stopped"
 
 step "Killing watcher processes..."
 pkill -f "vcam_watcher" 2>/dev/null || true
+pkill -f "vmic_watcher" 2>/dev/null || true
 done_msg "Watchers killed"
+
+step "Removing virtual microphone..."
+if command -v pactl &>/dev/null && pactl info &>/dev/null 2>&1; then
+    # Unload by matching the module arguments we created them with.
+    while read -r mod_id mod_args; do
+        case "$mod_args" in
+            *BluCast_Virtual_Microphone*|*BluCast_Mic_Sink*)
+                pactl unload-module "$mod_id" 2>/dev/null || true ;;
+        esac
+    done < <(pactl list short modules 2>/dev/null | awk '{id=$1; $1=""; $2=""; print id, $0}')
+fi
+rm -f "$HOME/.config/pipewire/pipewire-pulse.conf.d/blucast.conf"
+done_msg "Virtual microphone removed"
 
 step "Unloading v4l2loopback module..."
 sudo modprobe -r v4l2loopback 2>/dev/null || true

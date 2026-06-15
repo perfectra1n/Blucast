@@ -4,6 +4,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VCAM_DEVICE="/dev/video10"
+MIC_SINK="BluCast_Mic_Sink"
+MIC_SOURCE="BluCast_Virtual_Microphone"
+MIC_LABEL="BluCast Virtual Microphone"
 SHARED_DIR="/tmp/blucast"
 GHCR_IMAGE="ghcr.io/andrei9383/blucast:latest"
 LOCAL_IMAGE="localhost/blucast:latest"
@@ -74,7 +77,21 @@ sleep 2
 
 mkdir -p "$SHARED_DIR"
 echo "0" > "$SHARED_DIR/consumers"
+echo "0" > "$SHARED_DIR/audio_consumers"
 rm -f "$SHARED_DIR/preview.jpg" "$SHARED_DIR/cmd.pipe"
+
+# Ensure the virtual microphone exists (idempotent — survives a pipewire restart).
+if command -v pactl &>/dev/null && pactl info &>/dev/null 2>&1; then
+    if ! pactl list short sinks 2>/dev/null | grep -q "$MIC_SINK"; then
+        pactl load-module module-null-sink sink_name="$MIC_SINK" rate=48000 \
+            sink_properties=device.description="BluCast_Mic_Sink" >/dev/null 2>&1 || true
+    fi
+    if ! pactl list short sources 2>/dev/null | grep -q "$MIC_SOURCE"; then
+        pactl load-module module-remap-source source_name="$MIC_SOURCE" \
+            master="${MIC_SINK}.monitor" \
+            source_properties=device.description="$MIC_LABEL" >/dev/null 2>&1 || true
+    fi
+fi
 
 xhost +local: 2>/dev/null || true
 
@@ -84,9 +101,17 @@ if [ -x "$SCRIPT_DIR/scripts/vcam_watcher.sh" ]; then
     WATCHER_PID=$!
 fi
 
+VMIC_WATCHER_PID=""
+if [ -x "$SCRIPT_DIR/scripts/vmic_watcher.sh" ]; then
+    "$SCRIPT_DIR/scripts/vmic_watcher.sh" "$MIC_SOURCE" &
+    VMIC_WATCHER_PID=$!
+fi
+
 cleanup() {
     [ -n "$WATCHER_PID" ] && kill "$WATCHER_PID" 2>/dev/null || true
-    rm -f "$SHARED_DIR/consumers" "$SHARED_DIR/preview.jpg" "$SHARED_DIR/cmd.pipe" \
+    [ -n "$VMIC_WATCHER_PID" ] && kill "$VMIC_WATCHER_PID" 2>/dev/null || true
+    rm -f "$SHARED_DIR/consumers" "$SHARED_DIR/audio_consumers" \
+          "$SHARED_DIR/preview.jpg" "$SHARED_DIR/cmd.pipe" \
           "$SHARED_DIR/server.pid" "$SHARED_DIR/.xauth"
 }
 trap cleanup EXIT
@@ -132,6 +157,23 @@ fi
 CONFIG_DIR="$HOME/.config/blucast"
 mkdir -p "$CONFIG_DIR"
 
+# Share the host audio socket so the container can capture mics and feed the
+# virtual mic sink. PULSE_SERVER works for both PulseAudio and PipeWire (the
+# latter via its pulse-protocol server), so this one path covers both.
+PULSE_ARGS=""
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+if [ -S "$RUNTIME_DIR/pulse/native" ]; then
+    PULSE_ARGS="-v $RUNTIME_DIR/pulse/native:/tmp/pulse-native -e PULSE_SERVER=unix:/tmp/pulse-native"
+fi
+# Also expose the PipeWire native socket if present (harmless on PulseAudio).
+if [ -S "$RUNTIME_DIR/pipewire-0" ]; then
+    PULSE_ARGS="$PULSE_ARGS -v $RUNTIME_DIR/pipewire-0:/tmp/pipewire-0"
+fi
+# Pass through the user's pulse cookie so authenticated servers accept us.
+if [ -f "$HOME/.config/pulse/cookie" ]; then
+    PULSE_ARGS="$PULSE_ARGS -v $HOME/.config/pulse/cookie:/root/.config/pulse/cookie:ro"
+fi
+
 echo "Starting BluCast..."
 
 $CONTAINER_CMD run --rm \
@@ -147,6 +189,7 @@ $CONTAINER_CMD run --rm \
     -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
     $XAUTH_ARGS \
     $DBUS_ARGS \
+    $PULSE_ARGS \
     -v "$HOME:/host_home:ro" \
     -v "$CONFIG_DIR:/root/.config/blucast:rw" \
     -v "$SHARED_DIR:$SHARED_DIR:rw" \

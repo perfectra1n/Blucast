@@ -4,21 +4,23 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     cmake build-essential libopencv-dev libv4l-dev \
+    pkg-config libpulse-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY sdk/TensorRT-8.5.1.7 /usr/local/TensorRT-8.5.1.7
 COPY sdk/VideoFX          /usr/local/VideoFX
+COPY sdk/AudioFX          /usr/local/AudioFX
 COPY sdk/cudnn             /usr/local/cuda/
 
-ENV LD_LIBRARY_PATH=/usr/local/TensorRT-8.5.1.7/lib:/usr/local/VideoFX/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/local/TensorRT-8.5.1.7/lib:/usr/local/VideoFX/lib:/usr/local/AudioFX/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
 WORKDIR /build
 COPY app/ /app/
 
 RUN mkdir -p /build/blucast && cd /build/blucast && \
     cmake /app \
-    -DCMAKE_CXX_FLAGS='-I/usr/local/VideoFX/include -I/usr/local/VideoFX/share/samples/utils' \
-    -DCMAKE_EXE_LINKER_FLAGS='-L/usr/local/VideoFX/lib -Wl,-rpath,/usr/local/VideoFX/lib:/usr/local/TensorRT-8.5.1.7/lib' && \
+    -DCMAKE_CXX_FLAGS='-I/usr/local/VideoFX/include -I/usr/local/VideoFX/share/samples/utils -I/usr/local/AudioFX/include' \
+    -DCMAKE_EXE_LINKER_FLAGS='-L/usr/local/VideoFX/lib -L/usr/local/AudioFX/lib -Wl,-rpath,/usr/local/VideoFX/lib:/usr/local/AudioFX/lib:/usr/local/TensorRT-8.5.1.7/lib' && \
     make -j$(nproc)
 
 RUN gcc -shared -fPIC -o /build/libcc_spoof.so /app/cc_spoof.c -ldl
@@ -34,6 +36,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     libopencv-videoio4.2 libopencv-imgproc4.2 libopencv-highgui4.2 \
     python3 python3-pip v4l-utils \
+    libpulse0 pulseaudio-utils \
     libxcb-cursor0 libxcb-xinerama0 libxcb-icccm4 libxcb-keysyms1 \
     libxcb-shape0 libegl1 libgl1-mesa-glx libxkbcommon0 libxkbcommon-x11-0 \
     libdbus-1-3 fonts-ubuntu fontconfig \
@@ -52,8 +55,10 @@ COPY --from=builder /usr/local/TensorRT-8.5.1.7/lib/libnvonnxparser.so.8*   /usr
 COPY --from=builder /usr/local/VideoFX/lib/libVideoFX.so*     /usr/local/lib/blucast/
 COPY --from=builder /usr/local/VideoFX/lib/libNVCVImage.so*   /usr/local/lib/blucast/
 COPY --from=builder /usr/local/VideoFX/lib/libNVTRTLogger.so* /usr/local/lib/blucast/
+COPY --from=builder /usr/local/AudioFX/lib/libNVAudioEffects.so* /usr/local/lib/blucast/
 
 COPY --from=builder /usr/local/VideoFX/lib/models /usr/local/VideoFX/lib/models
+COPY --from=builder /usr/local/AudioFX/models     /usr/local/AudioFX/models
 
 RUN ln -sf /usr/local/lib/blucast/libVideoFX.so /usr/local/lib/blucast/libNVVideoEffects.so
 

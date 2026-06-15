@@ -35,6 +35,14 @@ EFFECT_MAP = {
     "none":    4,
 }
 
+# Microphone effects → AudioEffectMode values in server.cpp / audio_processor.h
+AUDIO_EFFECT_MAP = {
+    "none":     0,
+    "denoise":  1,
+    "dereverb": 2,
+    "studio":   3,
+}
+
 DEFAULT_FORMATS = {
     "640x480":   [15, 24, 30, 60],
     "1280x720":  [15, 24, 30, 60],
@@ -122,6 +130,32 @@ def get_video_devices() -> List[Tuple[str, str]]:
     except Exception:
         pass
     return devices or [("/dev/video0", "Default Camera")]
+
+
+def get_audio_sources() -> List[Tuple[str, str]]:
+    """Return [(pulse_source_name, friendly_name)] for real mics.
+
+    Monitors and BluCast's own virtual mic are filtered out so the user can't
+    create a feedback loop by selecting our own output as the input.
+    """
+    sources: List[Tuple[str, str]] = []
+    try:
+        res = subprocess.run(
+            ["pactl", "-f", "json", "list", "sources"],
+            capture_output=True, text=True, timeout=2,
+        )
+        for s in json.loads(res.stdout or "[]"):
+            name = s.get("name", "")
+            if not name or name.endswith(".monitor") or "BluCast" in name:
+                continue
+            props = s.get("properties", {}) or {}
+            desc = (s.get("description")
+                    or props.get("device.description")
+                    or name)
+            sources.append((name, desc))
+    except Exception:
+        pass
+    return sources or [("", "Default Microphone")]
 
 
 def get_supported_formats(device: str) -> Dict[str, List[int]]:
@@ -220,6 +254,10 @@ class Settings:
         "resolution": "1280x720",
         "fps": 30,
         "input_device": "",
+        "audio_enabled": False,
+        "audio_effect": "denoise",
+        "audio_intensity": 100,
+        "audio_device": "",
     }
 
     def __init__(self):
@@ -585,6 +623,80 @@ class ControlPanel(QMainWindow):
         cam_layout.addWidget(self.fps_combo)
 
         layout.addWidget(cam_card)
+
+        # ── Microphone effects ──
+        mic_card = Card()
+        mic_layout = QVBoxLayout(mic_card)
+        mic_layout.setContentsMargins(16, 16, 16, 16)
+        mic_layout.setSpacing(14)
+
+        mic_header = QHBoxLayout()
+        mic_title = QLabel("Microphone Effects")
+        mic_title.setStyleSheet("font-size: 14px; font-weight: 600; color: #fff; background: transparent;")
+        mic_header.addWidget(mic_title)
+        mic_header.addStretch()
+        self.audio_toggle = QPushButton("OFF")
+        self.audio_toggle.setCheckable(True)
+        self.audio_toggle.setFixedWidth(70)
+        self.audio_toggle.toggled.connect(self._on_audio_enable)
+        mic_header.addWidget(self.audio_toggle)
+        mic_layout.addLayout(mic_header)
+
+        # Effect selector (exclusive, same pattern as the video effect buttons)
+        mic_btn_row = QHBoxLayout()
+        mic_btn_row.setSpacing(8)
+        self.audio_buttons: Dict[str, EffectButton] = {}
+        self.audio_group = QButtonGroup(self)
+        self.audio_group.setExclusive(True)
+        for key, label in [("none", "NONE"), ("denoise", "DENOISE"),
+                           ("dereverb", "DEREVERB"), ("studio", "STUDIO")]:
+            btn = EffectButton(label)
+            self.audio_buttons[key] = btn
+            self.audio_group.addButton(btn)
+            mic_btn_row.addWidget(btn)
+            btn.toggled.connect(lambda checked, k=key: self._on_audio_effect(k, checked))
+        mic_layout.addLayout(mic_btn_row)
+
+        # Intensity slider (clone of the blur slider)
+        self.audio_intensity_controls = QWidget()
+        ai_layout = QVBoxLayout(self.audio_intensity_controls)
+        ai_layout.setContentsMargins(0, 8, 0, 0)
+        ai_layout.setSpacing(8)
+        ai_head = QHBoxLayout()
+        ai_head.addWidget(self._styled_label("Effect Strength"))
+        self.audio_intensity_label = QLabel("100%")
+        self.audio_intensity_label.setStyleSheet("color: #3b82f6; font-size: 13px; font-weight: 600; background: transparent;")
+        ai_head.addWidget(self.audio_intensity_label)
+        ai_layout.addLayout(ai_head)
+        self.audio_intensity_slider = QSlider(Qt.Horizontal)
+        self.audio_intensity_slider.setRange(0, 100)
+        self.audio_intensity_slider.setValue(100)
+        self.audio_intensity_slider.valueChanged.connect(self._on_audio_intensity)
+        ai_layout.addWidget(self.audio_intensity_slider)
+        mic_layout.addWidget(self.audio_intensity_controls)
+
+        # Input source selector (clone of the camera device row)
+        mic_layout.addWidget(self._styled_label("Input Microphone"))
+        src_row = QHBoxLayout()
+        self.audio_source_combo = QComboBox()
+        self.audio_source_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._populate_audio_sources()
+        self.audio_source_combo.currentIndexChanged.connect(self._on_audio_source)
+        src_row.addWidget(self.audio_source_combo)
+        mic_refresh = QPushButton("⟳")
+        mic_refresh.setFixedSize(46, 46)
+        mic_refresh.setStyleSheet("""
+            QPushButton {
+                background: #1a1f1a; border: 1px solid #2d3d2d; border-radius: 10px;
+                font-size: 18px; color: #94a3b8; padding: 8px;
+            }
+            QPushButton:hover { background: #1f2a1f; border-color: #3b82f6; color: #3b82f6; }
+        """)
+        mic_refresh.clicked.connect(self._refresh_audio_sources)
+        src_row.addWidget(mic_refresh)
+        mic_layout.addLayout(src_row)
+
+        layout.addWidget(mic_card)
         layout.addStretch()
 
         # ── Quit ──
@@ -618,6 +730,21 @@ class ControlPanel(QMainWindow):
         for i in range(self.device_combo.count()):
             if self.device_combo.itemData(i) == cur:
                 self.device_combo.setCurrentIndex(i)
+                break
+
+    def _populate_audio_sources(self):
+        self.audio_source_combo.blockSignals(True)
+        self.audio_source_combo.clear()
+        for name, desc in get_audio_sources():
+            self.audio_source_combo.addItem(desc, name)
+        self.audio_source_combo.blockSignals(False)
+
+    def _refresh_audio_sources(self):
+        cur = self.audio_source_combo.currentData()
+        self._populate_audio_sources()
+        for i in range(self.audio_source_combo.count()):
+            if self.audio_source_combo.itemData(i) == cur:
+                self.audio_source_combo.setCurrentIndex(i)
                 break
 
     def _refresh_formats(self):
@@ -703,6 +830,26 @@ class ControlPanel(QMainWindow):
             self.settings.set("fps", sel_fps)
         self._update_info_label()
 
+        # Audio effect
+        aeff = self.settings.get("audio_effect")
+        abtn = self.audio_buttons.get(aeff, self.audio_buttons["denoise"])
+        abtn.setChecked(True)
+        self.audio_intensity_controls.setVisible(aeff != "none")
+
+        # Audio intensity
+        self.audio_intensity_slider.setValue(self.settings.get("audio_intensity"))
+
+        # Audio source
+        saved_src = self.settings.get("audio_device")
+        if saved_src:
+            for i in range(self.audio_source_combo.count()):
+                if self.audio_source_combo.itemData(i) == saved_src:
+                    self.audio_source_combo.setCurrentIndex(i)
+                    break
+
+        # Audio enable (set last so the toggle reflects the restored state)
+        self.audio_toggle.setChecked(bool(self.settings.get("audio_enabled")))
+
         # Send everything to server
         self._send_all()
 
@@ -721,6 +868,15 @@ class ControlPanel(QMainWindow):
         send_command(f"BLUR:{self.settings.get('blur_strength') / 100.0}")
         send_command(f"RESOLUTION:{self.settings.get('resolution')}")
         send_command(f"FPS:{self.settings.get('fps')}")
+
+        # Audio
+        asrc = self.settings.get("audio_device")
+        if asrc:
+            send_command(f"AUDIO_DEVICE:{asrc}")
+        send_command(f"AUDIO_MODE:{AUDIO_EFFECT_MAP.get(self.settings.get('audio_effect'), 1)}")
+        send_command(f"AUDIO_INTENSITY:{self.settings.get('audio_intensity') / 100.0}")
+        send_command(f"AUDIO_ENABLE:{1 if self.settings.get('audio_enabled') else 0}")
+
         send_command("WINDOW:visible")
 
     # ── Callbacks ────────────────────────────────────────────────────────
@@ -786,6 +942,36 @@ class ControlPanel(QMainWindow):
         send_command(f"FPS:{fps}")
         self.settings.set("fps", fps)
         self._update_info_label()
+
+    # ── Audio callbacks ──────────────────────────────────────────────────
+    def _on_audio_enable(self, on: bool):
+        self.audio_toggle.setText("ON" if on else "OFF")
+        self.audio_toggle.setStyleSheet(
+            "QPushButton { background: #3b82f6; border: none; color: white;"
+            " border-radius: 10px; padding: 8px; font-weight: 600; }"
+            if on else "")
+        send_command(f"AUDIO_ENABLE:{1 if on else 0}")
+        self.settings.set("audio_enabled", on)
+
+    def _on_audio_effect(self, key: str, checked: bool):
+        if not checked:
+            return
+        send_command(f"AUDIO_MODE:{AUDIO_EFFECT_MAP.get(key, 0)}")
+        self.settings.set("audio_effect", key)
+        # Intensity only matters for active effects.
+        self.audio_intensity_controls.setVisible(key != "none")
+
+    def _on_audio_intensity(self, value: int):
+        self.audio_intensity_label.setText(f"{value}%")
+        send_command(f"AUDIO_INTENSITY:{value / 100.0}")
+        self.settings.set("audio_intensity", value)
+
+    def _on_audio_source(self, index: int):
+        if index < 0:
+            return
+        name = self.audio_source_combo.itemData(index)
+        send_command(f"AUDIO_DEVICE:{name}")
+        self.settings.set("audio_device", name)
 
     def _quit(self):
         send_command("QUIT")
