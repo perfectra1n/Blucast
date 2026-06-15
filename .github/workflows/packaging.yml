@@ -50,13 +50,17 @@ jobs:
         run: |
           cp -r packaging/debian debian
           dpkg-buildpackage -b -us -uc
-          ls -l ../blucast_*.deb
+          # dpkg-buildpackage writes to the parent dir; move into the workspace
+          # because upload-artifact@v4 rejects '..' in paths.
+          mkdir -p dist
+          mv ../blucast_*.deb dist/
+          ls -l dist/
       - name: Lintian (informational)
-        run: lintian ../blucast_*.deb || true
+        run: lintian dist/blucast_*.deb || true
       - uses: actions/upload-artifact@v4
         with:
           name: blucast-deb
-          path: ../blucast_*.deb
+          path: dist/blucast_*.deb
 
   rpm:
     name: Fedora .spec (rpmlint + build)
