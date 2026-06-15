@@ -23,7 +23,7 @@ body:
       label: Steps to Reproduce
       description: Steps to reproduce the behavior
       placeholder: |
-        1. Run './run.sh'
+        1. Run 'blucast'
         2. Select effect '...'
         3. See error
     validations:

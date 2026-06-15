@@ -1,0 +1,49 @@
+# Maintainer: BluCast contributors
+pkgname=blucast
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="AI-powered virtual camera and microphone (NVIDIA Maxine), containerized"
+arch=('x86_64')
+url="https://github.com/Andrei9383/BluCast"
+license=('MIT')
+# v4l2loopback-dkms provides /dev/video10; podman runs the GPU container.
+depends=('v4l2loopback-dkms' 'podman' 'libpulse')
+optdepends=('docker: alternative container runtime'
+            'nvidia-utils: required NVIDIA driver userspace'
+            'nvidia-container-toolkit: GPU passthrough into the container')
+makedepends=('git')
+install="$pkgname.install"
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "$srcdir/BluCast-$pkgver"
+
+    # Launcher on PATH
+    install -Dm755 packaging/common/blucast "$pkgdir/usr/bin/blucast"
+
+    # System integration (package-owned, declarative)
+    install -Dm644 packaging/common/modules-load.d/blucast.conf \
+        "$pkgdir/usr/lib/modules-load.d/blucast.conf"
+    install -Dm644 packaging/common/modprobe.d/blucast-v4l2loopback.conf \
+        "$pkgdir/usr/lib/modprobe.d/blucast-v4l2loopback.conf"
+    install -Dm644 packaging/common/udev/83-blucast-vcam.rules \
+        "$pkgdir/usr/lib/udev/rules.d/83-blucast-vcam.rules"
+    install -Dm644 packaging/common/pipewire/blucast-vmic.conf \
+        "$pkgdir/usr/share/pipewire/pipewire-pulse.conf.d/blucast-vmic.conf"
+
+    # Desktop entry + icon
+    install -Dm644 packaging/common/blucast.desktop \
+        "$pkgdir/usr/share/applications/blucast.desktop"
+    install -Dm644 assets/logo.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/blucast.svg"
+
+    # Image build context used by `blucast --build`
+    install -Dm644 Containerfile "$pkgdir/usr/share/blucast/Containerfile"
+    cp -r app    "$pkgdir/usr/share/blucast/app"
+    cp -r assets "$pkgdir/usr/share/blucast/assets"
+    install -Dm755 scripts/vcam_watcher.sh "$pkgdir/usr/share/blucast/scripts/vcam_watcher.sh"
+    install -Dm755 scripts/vmic_watcher.sh "$pkgdir/usr/share/blucast/scripts/vmic_watcher.sh"
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE" 2>/dev/null || true
+}

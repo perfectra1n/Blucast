@@ -1,0 +1,92 @@
+name: Packaging
+
+on:
+  push:
+    branches: [main]
+    paths: ['packaging/**', 'flake.nix', 'scripts/**', '.github/workflows/packaging.yml']
+  pull_request:
+    paths: ['packaging/**', 'flake.nix', 'scripts/**', '.github/workflows/packaging.yml']
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: Shell & desktop lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y shellcheck desktop-file-utils
+      - name: ShellCheck launcher & watchers
+        run: shellcheck packaging/common/blucast scripts/vcam_watcher.sh scripts/vmic_watcher.sh
+      - name: Validate desktop entry
+        run: desktop-file-validate packaging/common/blucast.desktop
+
+  arch:
+    name: Arch PKGBUILD (namcap)
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install namcap
+        run: pacman -Sy --noconfirm namcap
+      - name: Lint PKGBUILD
+        run: namcap packaging/arch/PKGBUILD || true
+      - name: Validate .SRCINFO generation
+        run: |
+          useradd -m builder
+          cp packaging/arch/PKGBUILD packaging/arch/blucast.install /tmp/
+          chown -R builder /tmp
+          su builder -c 'cd /tmp && makepkg --printsrcinfo' > /dev/null
+
+  deb:
+    name: Debian .deb (build)
+    runs-on: ubuntu-latest
+    container: debian:stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tooling
+        run: apt-get update && apt-get install -y build-essential debhelper devscripts lintian
+      - name: Stage debian/ and build
+        run: |
+          cp -r packaging/debian debian
+          dpkg-buildpackage -b -us -uc
+          ls -l ../blucast_*.deb
+      - name: Lintian (informational)
+        run: lintian ../blucast_*.deb || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blucast-deb
+          path: ../blucast_*.deb
+
+  rpm:
+    name: Fedora .spec (rpmlint + build)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rpm tooling
+        run: dnf install -y rpm-build rpmlint rpmdevtools desktop-file-utils tar
+      - name: rpmlint (informational)
+        run: rpmlint packaging/fedora/blucast.spec || true
+      - name: Build SRPM-equivalent source tarball and RPM
+        run: |
+          rpmdev-setuptree
+          ver=$(rpmspec -q --qf '%{version}\n' packaging/fedora/blucast.spec | head -1)
+          # %autosetup expects a BluCast-<ver>/ top dir
+          tar --transform "s,^,BluCast-${ver}/," -czf ~/rpmbuild/SOURCES/blucast-${ver}.tar.gz \
+            packaging app assets scripts Containerfile LICENSE 2>/dev/null || \
+          tar --transform "s,^,BluCast-${ver}/," -czf ~/rpmbuild/SOURCES/blucast-${ver}.tar.gz \
+            packaging app assets scripts Containerfile
+          rpmbuild -bb packaging/fedora/blucast.spec
+          ls -l ~/rpmbuild/RPMS/noarch/blucast-*.rpm
+
+  nix:
+    name: Nix flake (check + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: Flake check
+        run: nix flake check --no-build
+      - name: Build package
+        run: nix build .#packages.x86_64-linux.default --print-build-logs

@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+# No compiled artifact in the .deb itself — the GPU container is built at
+# runtime via `blucast --build`. We only stage the integration files.
+override_dh_auto_build:
+
+override_dh_auto_install:
+	install -Dm755 packaging/common/blucast \
+		debian/blucast/usr/bin/blucast
+	install -Dm644 packaging/common/modules-load.d/blucast.conf \
+		debian/blucast/usr/lib/modules-load.d/blucast.conf
+	install -Dm644 packaging/common/modprobe.d/blucast-v4l2loopback.conf \
+		debian/blucast/usr/lib/modprobe.d/blucast-v4l2loopback.conf
+	install -Dm644 packaging/common/udev/83-blucast-vcam.rules \
+		debian/blucast/usr/lib/udev/rules.d/83-blucast-vcam.rules
+	install -Dm644 packaging/common/pipewire/blucast-vmic.conf \
+		debian/blucast/usr/share/pipewire/pipewire-pulse.conf.d/blucast-vmic.conf
+	install -Dm644 packaging/common/blucast.desktop \
+		debian/blucast/usr/share/applications/blucast.desktop
+	install -Dm644 assets/logo.svg \
+		debian/blucast/usr/share/icons/hicolor/scalable/apps/blucast.svg
+	install -Dm644 Containerfile \
+		debian/blucast/usr/share/blucast/Containerfile
+	cp -r app    debian/blucast/usr/share/blucast/app
+	cp -r assets debian/blucast/usr/share/blucast/assets
+	install -Dm755 scripts/vcam_watcher.sh \
+		debian/blucast/usr/share/blucast/scripts/vcam_watcher.sh
+	install -Dm755 scripts/vmic_watcher.sh \
+		debian/blucast/usr/share/blucast/scripts/vmic_watcher.sh

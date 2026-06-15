@@ -1,0 +1,25 @@
+Source: blucast
+Section: video
+Priority: optional
+Maintainer: BluCast contributors <noreply@example.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/Andrei9383/BluCast
+Rules-Requires-Root: no
+
+Package: blucast
+Architecture: amd64
+Depends: ${misc:Depends},
+         v4l2loopback-dkms,
+         podman | docker.io,
+         libpulse0
+Recommends: pipewire-pulse | pulseaudio,
+            nvidia-container-toolkit
+Description: AI-powered virtual camera and microphone (NVIDIA Maxine)
+ BluCast provides NVIDIA Broadcast-style real-time effects on Linux: background
+ blur/replacement on a virtual camera and noise/echo removal on a virtual
+ microphone, powered by the NVIDIA Maxine SDK inside a GPU container.
+ .
+ This package installs the launcher and system integration. Build the GPU
+ container image once after installation with:
+   blucast --build --sdk=/path/to/sdk.tar.gz

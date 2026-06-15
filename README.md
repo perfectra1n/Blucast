@@ -4,7 +4,7 @@
 <img src="assets/logo.svg" alt="BluCast Logo" width="64" /> <h1 align="center">BluCast</h1>
 
 <p align="center">
-  Real-time AI-powered video effects using NVIDIA Maxine VideoFX SDK.<br>
+  Real-time AI-powered camera <em>and microphone</em> effects using the NVIDIA Maxine SDK.<br>
   Basically NVIDIA Broadcast, but for Linux.
 </p>
 
@@ -19,242 +19,197 @@
 ## Table of Contents
 - [Features](#features)
 - [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
+- [Installation](#installation)
+  - [Arch](#arch)
+  - [Fedora](#fedora)
+  - [Debian / Ubuntu](#debian--ubuntu)
+  - [NixOS](#nixos)
+  - [Build the GPU image (all distros, once)](#build-the-gpu-image-all-distros-once)
 - [Usage](#usage)
 - [Configuration](#configuration)
-- [Building from Source](#building-from-source)
-  - [1. Clone the repository](#1-clone-the-repository)
-  - [2. Download the NVIDIA Maxine SDK, if you have an AI Enterprise subscription :(](#2-download-the-nvidia-maxine-sdk-if-you-have-an-ai-enterprise-subscription-)
-  - [3. Extract SDKs to the `sdk/` directory](#3-extract-sdks-to-the-sdk-directory)
-  - [4. Build and run](#4-build-and-run)
-- [Virtual Camera Setup](#virtual-camera-setup)
+- [Obtaining the NVIDIA Maxine SDK](#obtaining-the-nvidia-maxine-sdk)
+- [How install works (no more sudo hacks)](#how-install-works-no-more-sudo-hacks)
 - [Uninstalling](#uninstalling)
 - [Troubleshooting](#troubleshooting)
-  - [No camera detected](#no-camera-detected)
-  - [GPU errors](#gpu-errors)
-  - [Error setting up CDI](#error-setting-up-cdi)
 - [License](#license)
-  - [Third-Party Components](#third-party-components)
 - [Contributing](#contributing)
 - [Acknowledgments](#acknowledgments)
 
 
 ## Features
 
+**Camera**
 - **Background Removal**
-- **Background Replacement** - Use any image as your background
+- **Background Replacement** — use any image as your background
 - **Background Blur**
-- **On-demand camera usage** - Camera (and processing power) is only used when needed
-- **Native Wayland and X11 support** - Auto-detects your display server for seamless integration
+
+**Microphone**
+- **Noise Removal** — background noise suppression
+- **Room Echo Removal** — de-reverberation
+- **Studio Voice** — voice enhancement
+- Exposed as a **"BluCast Virtual Microphone"** any app can select
+
+**General**
+- **On-demand usage** — camera/GPU only active when something is consuming the feed
+- **Native Wayland and X11 support**
 
 ## Prerequisites
 
-The following must be installed on your host system **before** installing BluCast:
-
-- **NVIDIA GPU**
-- **NVIDIA drivers** with CUDA support - verify with `nvidia-smi`
+- **NVIDIA GPU** with drivers + CUDA — verify with `nvidia-smi`
 - **Podman or Docker**
-- **[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)** - required for GPU passthrough into the container
-  - Fedora: `sudo dnf install nvidia-container-toolkit`
-  - Ubuntu: follow the [official install guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-- **[v4l2loopback](https://github.com/umlaeute/v4l2loopback)** - kernel module for the virtual camera device
-  - Fedora: `sudo dnf install v4l2loopback`
-  - Ubuntu: `sudo apt install v4l2loopback-dkms`
-- **(if you're using GNOME):** [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) - required for the system tray icon
-  - Without this extension, the system tray icon will not appear and closing the window will not minimize to tray
+- **[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)** — GPU passthrough into the container
+- **(GNOME only):** [AppIndicator extension](https://extensions.gnome.org/extension/615/appindicator-support/) for the tray icon
 
-## Quick Start
+The `v4l2loopback` kernel module and the virtual microphone are set up **for you** by the
+package (it depends on your distro's `v4l2loopback-dkms`/`akmod-v4l2loopback`).
 
-The easiest way to get BluCast running:
+## Installation
 
+BluCast now ships as a native package per distro instead of a `curl | bash` script. The package
+installs the launcher and all system integration; you then build the GPU image once (below).
+
+> The packages do **not** redistribute the proprietary NVIDIA SDK — you supply it at image-build
+> time. See [Obtaining the NVIDIA Maxine SDK](#obtaining-the-nvidia-maxine-sdk).
+
+### Arch
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Andrei9383/BluCast/main/scripts/install-remote.sh | bash
+cd packaging/arch && makepkg -si
 ```
 
-> [!NOTE]
-> **Fedora users:** After installation you will most likely need to generate the CDI spec for GPU passthrough to work. See [Error setting up CDI](#error-setting-up-cdi) in the Troubleshooting section.
+### Fedora
+```bash
+# Enable RPM Fusion (provides akmod-v4l2loopback), then build & install:
+sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+# (build steps in packaging/README.md)
+sudo dnf install ~/rpmbuild/RPMS/noarch/blucast-*.rpm
+```
+
+### Debian / Ubuntu
+```bash
+cp -r packaging/debian debian && dpkg-buildpackage -b -us -uc
+sudo apt install ../blucast_*.deb
+```
+
+### NixOS
+```nix
+# add the flake input, then in your system modules:
+imports = [ blucast.nixosModules.blucast ];
+programs.blucast.enable = true;
+```
+`nixos-rebuild switch` wires v4l2loopback, the virtual mic, udev and podman declaratively.
+
+Full per-distro build instructions: [`packaging/README.md`](packaging/README.md).
+
+### Build the GPU image (all distros, once)
+```bash
+blucast --build --sdk=/path/to/sdk.tar.gz      # or an extracted sdk/ directory
+systemctl --user restart pipewire pipewire-pulse wireplumber   # expose the virtual mic
+```
 
 > [!TIP]
-> **Firefox users:** If the BluCast virtual camera doesn't appear in Firefox, open `about:config` and set `media.webrtc.camera.allow-pipewire` to `false`.
-
-Or manually:
-
-```bash
-# Pull the container
-podman pull ghcr.io/andrei9383/blucast:latest
-
-# Setup virtual camera (requires v4l2loopback)
-sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="BluCast Camera" exclusive_caps=1
-
-# Run (X11)
-podman run --rm \
-  --device nvidia.com/gpu=all \
-  --device /dev/video0 \
-  --device /dev/video10 \
-  -e DISPLAY=$DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -v $HOME/.config/blucast:/root/.config/blucast \
-  --network host \
-  ghcr.io/andrei9383/blucast:latest
-
-# Run (Wayland)
-podman run --rm \
-  --device nvidia.com/gpu=all \
-  --device /dev/video0 \
-  --device /dev/video10 \
-  -e DISPLAY=$DISPLAY \
-  -e WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
-  -e XDG_RUNTIME_DIR=/tmp/runtime-root \
-  -e QT_QPA_PLATFORM=wayland \
-  -v $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY:/tmp/runtime-root/$WAYLAND_DISPLAY \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -v $HOME/.config/blucast:/root/.config/blucast \
-  --network host \
-  ghcr.io/andrei9383/blucast:latest
-```
-
-After installation, run `blucast` from terminal or find it in your application menu.
+> **Firefox users:** if the virtual camera doesn't appear, set
+> `media.webrtc.camera.allow-pipewire` to `false` in `about:config`.
 
 ## Usage
 
-1. Launch Blucast by running the desktop entry application or by running `./run.sh` at the install location
-2. Select your desired effect from the dropdown
-3. For custom backgrounds, click "Browse" and select an image
-4. The virtual camera appears as `/dev/video10`
-5. Select "BluCast Camera" in your video conferencing app
+1. Launch `blucast` from a terminal or your application menu.
+2. **Camera:** pick an effect (blur / replace / remove); for replace, click **Browse**.
+3. **Microphone:** toggle the mic effects on, pick noise/echo/studio, set strength, choose your input mic.
+4. In your conferencing app select **"BluCast Virtual Camera"** and **"BluCast Virtual Microphone"**.
 
 ## Configuration
 
-Settings are stored in `~/.config/blucast/settings.json` and persist between sessions.
+Settings live in `~/.config/blucast/settings.json` and persist between sessions:
 
-The configuration file looks like this:
 ```json
 {
-  "effect_mode"     : "",      // "blur" | "replace" | "remove" | "none"
-  "background_image": "",      // path to image
-  "blur_strength"   : 0,       // 0-100
-  "resolution"      : "",      // resolution, eg "1280x720"
+  "effect_mode"     : "blur",     // "blur" | "replace" | "remove" | "none"
+  "background_image": "",
+  "blur_strength"   : 50,         // 0-100
+  "resolution"      : "1280x720",
   "fps"             : 30,
-  "input_device"    : "",      // device path, eg "/dev/video0"
+  "input_device"    : "/dev/video0",
+  "audio_enabled"   : false,
+  "audio_effect"    : "denoise",  // "none" | "denoise" | "dereverb" | "studio"
+  "audio_intensity" : 100,        // 0-100
+  "audio_device"    : ""          // pulse source name; "" = default mic
 }
 ```
 
-## Building from Source
-
-If you prefer to build locally (if you have the SDK available):
+## Obtaining the NVIDIA Maxine SDK
 
 > [!NOTE]
-> The Maxine SDK (for version v0.7.2.0), as per my trials, requires (very) specific versions of cuDNN and TensorRT:
-> - CUDA 11.8.0
-> - cuDNN 8.6.0.163
-> - TensorRT 8.5.1.7
+> The Maxine SDK (v0.7.2.0) requires specific versions: **CUDA 11.8.0, cuDNN 8.6.0.163,
+> TensorRT 8.5.1.7**.
 
-### 1. Clone the repository
+From the [NVIDIA NGC Catalog](https://catalog.ngc.nvidia.com/): download the **Video Effects SDK**,
+the **Audio Effects SDK**, **TensorRT 8.5.x**, and **cuDNN 8.x** for Linux, then arrange a `sdk/`
+directory:
 
-```bash
-git clone https://github.com/Andrei9383/BluCast.git
-cd BluCast
-```
-
-### 2. Download the NVIDIA Maxine SDK, if you have an AI Enterprise subscription :(
-
-1. Visit [NVIDIA Catalog](https://catalog.ngc.nvidia.com/)
-3. Download the **Video Effects SDK** for Linux
-4. Download **TensorRT 8.5.x** and **cuDNN 8.x** (check the versions specified in the documentation of the SDK, usually they are pretty strict)
-
-### 3. Extract SDKs to the `sdk/` directory
-
-```bash
-mkdir -p sdk
-# Extract VideoFX SDK
-tar -xzf Video_Effects_SDK_*.tar.gz -C sdk/
-mv sdk/Video_Effects_SDK* sdk/VideoFX
-
-# Extract TensorRT
-tar -xzf TensorRT-8.5.*.tar.gz -C sdk/
-
-# Extract cuDNN (copy libraries)
-mkdir -p sdk/cudnn
-tar -xzf cudnn-*.tar.xz
-cp -r cudnn-*/lib/* sdk/cudnn/
-cp -r cudnn-*/include/* sdk/cudnn/
-```
-
-Your `sdk/` directory should look like:
 ```
 sdk/
 ├── VideoFX/
+├── AudioFX/
 ├── TensorRT-8.5.1.7/
 └── cudnn/
 ```
 
-### 4. Build and run
+Pack it (`tar -czf sdk.tar.gz sdk/`) and pass it to `blucast --build --sdk=sdk.tar.gz`.
 
-```bash
-./install.sh
-./run.sh
-```
+## How install works (no more sudo hacks)
 
+The old `install.sh` mutated the host imperatively (`sudo modprobe`, writing `/etc/modprobe.d`,
+`/etc/udev`, a NOPASSWD `sudoers` entry, runtime `pactl load-module`). The packages replace all of
+that with the Linux norm:
 
-
-## Virtual Camera Setup
-
-BluCast uses v4l2loopback to create a virtual camera. The installer handles this automatically, but if needed:
-
-```bash
-sudo modprobe v4l2loopback devices=1 video_nr=10 card_label="BluCast Camera" exclusive_caps=1
-```
-
-To load automatically on boot, create `/etc/modules-load.d/v4l2loopback.conf`:
-```
-v4l2loopback
-```
-
-And `/etc/modprobe.d/v4l2loopback.conf`:
-```
-options v4l2loopback devices=1 video_nr=10 card_label="BluCast Camera" exclusive_caps=1
-```
+| Concern | How it's handled now |
+|---|---|
+| Load `v4l2loopback` | `/usr/lib/modules-load.d/blucast.conf` (boot) + dependency on `*-dkms`/`akmod` |
+| Module options | `/usr/lib/modprobe.d/blucast-v4l2loopback.conf` |
+| Camera permissions | `udev` `uaccess` rule — no `chmod 666`, no `sudoers` |
+| Virtual microphone | declarative PipeWire drop-in — no runtime `pactl` |
+| Launch | `/usr/bin/blucast` (a normal program, no privilege escalation) |
 
 ## Uninstalling
 
-```bash
-./scripts/uninstall.sh
-```
+Use your package manager — it reverses everything the package installed:
 
-This stops any running containers, unloads the kernel module, removes all system config files (modprobe, udev, sudoers), and deletes the desktop entry and user settings.
+```bash
+sudo pacman -R blucast          # Arch
+sudo apt purge blucast          # Debian/Ubuntu
+sudo dnf remove blucast         # Fedora
+# NixOS: set programs.blucast.enable = false; and rebuild
+podman rmi localhost/blucast:latest   # remove the built image (optional)
+```
 
 ## Troubleshooting
 
-### No camera detected
-- Ensure your webcam is connected: `ls /dev/video*`
-- Check camera permissions: `groups | grep video`
+**No camera detected** — `ls /dev/video*`; confirm you're in the `video` group.
 
-### GPU errors
-- Verify NVIDIA drivers: `nvidia-smi`
-- Check Container Toolkit: `podman run --rm --device nvidia.com/gpu=all nvidia/cuda:11.8.0-base-ubuntu20.04 nvidia-smi`
+**Virtual camera missing** — it loads at boot; if absent right after install, reboot or
+`sudo modprobe v4l2loopback`.
 
-### Error setting up CDI
-- If you encounter an error such as: `Error: setting up CDI devices: unresolvable CDI devices nvidia.com/gpu=all`, that means the CDI spec hasn't been generated (yet). Try running:
-`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`
+**Virtual mic missing** — restart PipeWire: `systemctl --user restart pipewire pipewire-pulse wireplumber`,
+then check `pactl list short sources | grep BluCast`.
 
+**GPU errors** — `nvidia-smi`; test passthrough:
+`podman run --rm --device nvidia.com/gpu=all nvidia/cuda:11.8.0-base-ubuntu20.04 nvidia-smi`.
+
+**Error setting up CDI** (`unresolvable CDI devices nvidia.com/gpu=all`) — generate the spec:
+`sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
 
 ## License
 
-This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
 
-### Third-Party Components
-
-- **NVIDIA Maxine SDK**
-- **OpenCV**
-- **PySide6**
-- **TensorRT**
+**Third-party:** NVIDIA Maxine SDK · OpenCV · PySide6 · TensorRT.
 
 ## Contributing
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Acknowledgments
 
-- NVIDIA Maxine team for the VideoFX SDK
+- NVIDIA Maxine team for the VideoFX/AudioFX SDKs
 - OpenCV community
 - Qt/PySide6 project

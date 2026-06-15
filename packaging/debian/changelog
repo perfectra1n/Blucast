@@ -1,0 +1,6 @@
+blucast (0.1.0) unstable; urgency=medium
+
+  * Initial native packaging: launcher, kernel-module integration, declarative
+    virtual microphone, and desktop entry. Replaces install.sh/run.sh.
+
+ -- BluCast contributors <noreply@example.com>  Mon, 15 Jun 2026 00:00:00 +0000

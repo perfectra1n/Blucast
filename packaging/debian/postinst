@@ -1,0 +1,23 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Apply the shipped udev rule and load the module now (so a reboot isn't
+        # required); modules-load.d handles it on subsequent boots.
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger 2>/dev/null || true
+        modprobe v4l2loopback 2>/dev/null || true
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q 2>/dev/null || true
+        fi
+        echo "BluCast installed. Build the GPU image once with:"
+        echo "  blucast --build --sdk=/path/to/sdk.tar.gz"
+        echo "Then restart PipeWire to expose the virtual mic:"
+        echo "  systemctl --user restart pipewire pipewire-pulse wireplumber"
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

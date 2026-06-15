@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=BluCast
+Comment=AI-powered virtual camera and microphone (NVIDIA Maxine)
+Exec=blucast
+Icon=blucast
+Terminal=false
+Type=Application
+Categories=Video;AudioVideo;
+StartupWMClass=blucast
+Keywords=camera;webcam;microphone;background;blur;noise;

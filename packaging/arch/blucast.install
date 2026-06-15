@@ -1,0 +1,25 @@
+post_install() {
+    # Reload udev so the virtual-camera rule applies, and load the module now so
+    # a reboot isn't required for first use.
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+    modprobe v4l2loopback 2>/dev/null || true
+    cat <<'EOF'
+==> BluCast installed.
+    1. Build the container image once (needs the proprietary NVIDIA SDK):
+         blucast --build --sdk=/path/to/sdk.tar.gz
+    2. Restart PipeWire to pick up the virtual microphone:
+         systemctl --user restart pipewire pipewire-pulse wireplumber
+    3. Launch: blucast  (or from your application menu)
+EOF
+}
+
+post_upgrade() {
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+}
+
+post_remove() {
+    udevadm control --reload-rules 2>/dev/null || true
+    echo "==> Remove the built image with: podman rmi localhost/blucast:latest"
+}

@@ -2,7 +2,7 @@
 # Push locally-built BluCast container to GitHub Container Registry
 #
 # Prerequisites:
-#   1. Build the container locally first: ./install.sh
+#   1. Build the container locally first: blucast --build --sdk=/path/to/sdk.tar.gz
 #   2. Create a GitHub Personal Access Token (PAT) with 'write:packages' scope
 #      https://github.com/settings/tokens/new?scopes=write:packages
 #
@@ -39,7 +39,7 @@ echo -e "${NC}"
 if ! $CONTAINER_CMD image exists "$LOCAL_IMAGE" 2>/dev/null && \
    ! $CONTAINER_CMD inspect "$LOCAL_IMAGE" &>/dev/null; then
     echo -e "${RED}Error: Local image not found${NC}"
-    echo -e "Build first with: ${BLUE}./install.sh${NC}"
+    echo -e "Build first with: ${BLUE}blucast --build --sdk=/path/to/sdk.tar.gz${NC}"
     exit 1
 fi
 

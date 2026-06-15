@@ -54,11 +54,13 @@ Feature requests are welcome! Please:
    cd blucast
    ```
 
-2. Download the NVIDIA Maxine SDK from [NVIDIA Developer](https://catalog.ngc.nvidia.com/) and extract to `sdk/`
+2. Download the NVIDIA Maxine SDK (VideoFX + AudioFX) from [NVIDIA NGC](https://catalog.ngc.nvidia.com/),
+   plus TensorRT/cuDNN, and arrange a `sdk/` directory (see the README).
 
-3. Build the container:
+3. Build and run from the source tree (no install needed) by pointing the launcher at the repo:
    ```bash
-   ./install.sh
+   BLUCAST_DATADIR="$PWD" packaging/common/blucast --build --sdk=sdk.tar.gz
+   BLUCAST_DATADIR="$PWD" packaging/common/blucast
    ```
 
 ### Code Structure
@@ -66,14 +68,18 @@ Feature requests are welcome! Please:
 ```
 blucast/
 ├── app/
-│   ├── control_panel.py    # Qt GUI application
-│   ├── videofx_server.cpp  # C++ video processing server
-│   └── CMakeLists.txt      # Build configuration
+│   ├── control_panel.py     # Qt GUI application
+│   ├── server.cpp           # C++ video/audio processing server
+│   ├── audio_processor.h    # NvAFX (microphone effects) wrapper
+│   ├── audio_io.h           # PulseAudio capture / virtual-mic I/O
+│   └── CMakeLists.txt       # Build configuration
 ├── scripts/
-│   └── vcam_watcher.sh     # Virtual camera monitor
-├── Containerfile           # Container build definition
-├── run.sh                  # Launch script
-└── install.sh              # Installation script
+│   ├── vcam_watcher.sh      # Virtual camera consumer monitor
+│   └── vmic_watcher.sh      # Virtual microphone consumer monitor
+├── Containerfile            # Container build definition
+└── packaging/               # Native packages (Arch/Debian/Fedora/Nix) + launcher
+    ├── common/blucast       # The `blucast` launcher (installed to /usr/bin)
+    └── README.md            # Per-distro build/install instructions
 ```
 
 ### Code Style
