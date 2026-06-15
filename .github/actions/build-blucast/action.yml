@@ -39,11 +39,14 @@ runs:
 
     - name: Download assembled SDK from NGC private registry
       shell: bash
+      # The NGC CLI authenticates from these env vars in headless mode — no
+      # interactive `ngc config set` needed (and 3.x dropped its --api-key flag).
       env:
         NGC_CLI_API_KEY: ${{ inputs.ngc-api-key }}
+        NGC_CLI_ORG: ${{ inputs.ngc-org }}
+        NGC_CLI_FORMAT_TYPE: json
       run: |
         resource="${{ inputs.ngc-org }}/${{ inputs.sdk-name }}:${{ inputs.sdk-version }}"
-        ngc config set --api-key "$NGC_CLI_API_KEY" --format_type json --org "${{ inputs.ngc-org }}" >/dev/null
         ngc registry resource download-version "$resource" --dest ./ngc-sdk
         tarball="$(find ./ngc-sdk -name 'sdk.tar.gz' | head -1)"
         [ -n "$tarball" ] || { echo "::error::sdk.tar.gz not found in the NGC resource."; exit 1; }
