@@ -1,0 +1,190 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths: ['app/**', 'Containerfile', '.github/workflows/build.yml']
+  pull_request:
+    paths: ['app/**', 'Containerfile', '.github/workflows/build.yml']
+  workflow_dispatch:
+
+# Repo configuration for the gated full build (set these under
+# Settings → Secrets and variables → Actions):
+#   secret  NGC_CLI_API_KEY   — your NGC personal API key (already added)
+#   var     NGC_ORG           — your NGC org (e.g. "abcd1234")
+#   var     NGC_SDK_RESOURCE  — resource holding your assembled sdk.tar.gz,
+#                               e.g. "blucast-sdk:1.0" (org-relative, name:version)
+# Populate the resource once from your working local SDK:
+#   tar -czf sdk.tar.gz sdk/         # sdk/ has VideoFX AudioFX TensorRT-8.5.1.7 cudnn
+#   ngc registry resource upload-version "<org>/blucast-sdk:1.0" --source sdk.tar.gz
+
+jobs:
+  # ── Always-on, SDK-free checks (run on every push & PR, incl. forks) ──────
+  app-checks:
+    name: Static checks (no SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python — syntax & error lint (control_panel.py)
+        run: |
+          python3 -m pip install --quiet ruff
+          python3 -m py_compile app/control_panel.py
+          # Conservative "stop the build" set: real errors only, not style.
+          ruff check --select=E9,F63,F7,F82 app/
+
+      - name: C++ — syntax check the audio headers against API stubs
+        run: |
+          sudo apt-get update && sudo apt-get install -y g++
+          d="$(mktemp -d)"; mkdir -p "$d/pulse"
+          cat > "$d/nvAudioEffects.h" <<'EOF'
+          #pragma once
+          typedef void* NvAFX_Handle;
+          typedef enum { NVAFX_STATUS_SUCCESS = 0 } NvAFX_Status;
+          #define NVAFX_EFFECT_DENOISER "denoiser"
+          #define NVAFX_EFFECT_DEREVERB "dereverb"
+          #define NVAFX_EFFECT_STUDIO_VOICE_HIGH_QUALITY "studio_voice_high_quality"
+          #define NVAFX_PARAM_MODEL_PATH "model_path"
+          #define NVAFX_PARAM_NUM_STREAMS "num_streams"
+          #define NVAFX_PARAM_INPUT_SAMPLE_RATE "input_sample_rate"
+          #define NVAFX_PARAM_OUTPUT_SAMPLE_RATE "output_sample_rate"
+          #define NVAFX_PARAM_NUM_INPUT_CHANNELS "num_input_channels"
+          #define NVAFX_PARAM_NUM_INPUT_SAMPLES_PER_FRAME "num_input_samples_per_frame"
+          #define NVAFX_PARAM_NUM_OUTPUT_SAMPLES_PER_FRAME "num_output_samples_per_frame"
+          #define NVAFX_PARAM_INTENSITY_RATIO "intensity_ratio"
+          NvAFX_Status NvAFX_CreateEffect(const char*, NvAFX_Handle*);
+          NvAFX_Status NvAFX_SetString(NvAFX_Handle, const char*, const char*);
+          NvAFX_Status NvAFX_SetU32(NvAFX_Handle, const char*, unsigned int);
+          NvAFX_Status NvAFX_SetFloat(NvAFX_Handle, const char*, float);
+          NvAFX_Status NvAFX_GetU32(NvAFX_Handle, const char*, unsigned int*);
+          NvAFX_Status NvAFX_Load(NvAFX_Handle);
+          NvAFX_Status NvAFX_Run(NvAFX_Handle, const float**, float**, unsigned, unsigned);
+          NvAFX_Status NvAFX_DestroyEffect(NvAFX_Handle);
+          EOF
+          cat > "$d/pulse/sample.h" <<'EOF'
+          #pragma once
+          #include <cstdint>
+          typedef enum { PA_SAMPLE_FLOAT32NE } pa_sample_format_t;
+          typedef struct { pa_sample_format_t format; uint32_t rate; uint8_t channels; } pa_sample_spec;
+          typedef uint64_t pa_usec_t;
+          size_t pa_usec_to_bytes(pa_usec_t t, const pa_sample_spec *spec);
+          EOF
+          cat > "$d/pulse/simple.h" <<'EOF'
+          #pragma once
+          #include "sample.h"
+          typedef struct pa_simple pa_simple;
+          typedef enum { PA_STREAM_PLAYBACK, PA_STREAM_RECORD } pa_stream_direction_t;
+          typedef struct { uint32_t maxlength, tlength, prebuf, minreq, fragsize; } pa_buffer_attr;
+          typedef struct pa_channel_map pa_channel_map;
+          pa_simple* pa_simple_new(const char*, const char*, pa_stream_direction_t, const char*, const char*, const pa_sample_spec*, const pa_channel_map*, const pa_buffer_attr*, int*);
+          int pa_simple_read(pa_simple*, void*, size_t, int*);
+          int pa_simple_write(pa_simple*, const void*, size_t, int*);
+          void pa_simple_free(pa_simple*);
+          EOF
+          cat > "$d/pulse/error.h" <<'EOF'
+          #pragma once
+          const char* pa_strerror(int error);
+          EOF
+          g++ -std=c++17 -fsyntax-only -I"$d" -x c++ app/audio_processor.h
+          g++ -std=c++17 -fsyntax-only -I"$d" -x c++ app/audio_io.h
+          echo "audio headers: syntax OK"
+
+      - name: C++ — cppcheck (informational)
+        run: |
+          sudo apt-get install -y cppcheck
+          cppcheck --enable=warning,performance --inline-suppr \
+            --suppress=missingInclude --suppress=missingIncludeSystem \
+            --error-exitcode=0 app/ 2>&1 | tee cppcheck.txt
+
+  # ── Decide whether the gated full build can run (needs the NGC secret) ────
+  guard:
+    name: Check NGC secret
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.c.outputs.enabled }}
+    steps:
+      - id: c
+        env:
+          KEY: ${{ secrets.NGC_CLI_API_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "NGC_CLI_API_KEY not available (fork PR or unset) — skipping full build."
+          fi
+
+  # ── Full container build against the real SDK (compiles server.cpp) ───────
+  # No marketplace "setup NGC CLI" action exists — license-gated SDKs are pulled
+  # inline with a per-account key, exactly as in NVIDIA/ngc-examples. The shared
+  # download+build logic lives in .github/actions/build-blucast (a composite
+  # action, the pytorch/test-infra pattern) so app-build and runtime reuse it.
+  app-build:
+    name: Container build (with SDK)
+    runs-on: ubuntu-latest
+    needs: guard
+    if: needs.guard.outputs.enabled == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate configuration
+        env:
+          NGC_ORG: ${{ vars.NGC_ORG }}
+          NGC_SDK_RESOURCE: ${{ vars.NGC_SDK_RESOURCE }}
+        run: |
+          if [ -z "$NGC_ORG" ] || [ -z "$NGC_SDK_RESOURCE" ]; then
+            echo "::error::Set repo variables NGC_ORG and NGC_SDK_RESOURCE (see build.yml header)."
+            exit 1
+          fi
+
+      - uses: ./.github/actions/build-blucast
+        with:
+          ngc-api-key: ${{ secrets.NGC_CLI_API_KEY }}
+          ngc-org: ${{ vars.NGC_ORG }}
+          ngc-resource: ${{ vars.NGC_SDK_RESOURCE }}
+          image-tag: blucast:ci
+
+  # ── GPU runtime smoke test (opt-in; needs a self-hosted GPU runner) ───────
+  # GitHub's hosted runners have no NVIDIA GPU, so real "the effect runs" tests
+  # need a self-hosted runner (the RAPIDS/PyTorch pattern). This job stays
+  # dormant until you register one AND set repo variable GPU_RUNNER=true, so it
+  # never queues forever on a runner that doesn't exist.
+  #
+  # Runner prerequisites: NVIDIA driver + container toolkit, podman/docker, and
+  # v4l2loopback loaded (so /dev/video10 exists).
+  runtime:
+    name: GPU smoke test (self-hosted)
+    needs: guard
+    if: ${{ vars.GPU_RUNNER == 'true' && needs.guard.outputs.enabled == 'true' }}
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/build-blucast
+        with:
+          ngc-api-key: ${{ secrets.NGC_CLI_API_KEY }}
+          ngc-org: ${{ vars.NGC_ORG }}
+          ngc-resource: ${{ vars.NGC_SDK_RESOURCE }}
+          image-tag: blucast:smoke
+
+      - name: GPU + virtual devices visible
+        run: |
+          nvidia-smi
+          ls -l /dev/video10 || echo "::warning::/dev/video10 missing — load v4l2loopback on the runner."
+
+      - name: Server loads the AI model (headless)
+        run: |
+          # Run only the C++ server (not the GUI), give it time to init the SDK,
+          # then assert the model loaded. "Model loaded." is printed by server.cpp
+          # after NvVFX_Load succeeds — a true end-to-end SDK + CUDA + cc_spoof check.
+          set +e
+          timeout 60 docker run --rm --gpus all \
+            --device /dev/video10:/dev/video10 \
+            blucast:smoke \
+            bash -c 'LD_PRELOAD=/usr/local/lib/blucast/libcc_spoof.so \
+                     /app/blucast_server --model_dir=/usr/local/VideoFX/lib/models' \
+            > server.log 2>&1
+          echo "---- server.log ----"; cat server.log
+          grep -qi "Model loaded" server.log \
+            && echo "✓ SDK initialized on GPU" \
+            || { echo "::error::server did not report a loaded model"; exit 1; }
