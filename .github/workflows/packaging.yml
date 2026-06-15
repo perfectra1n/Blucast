@@ -8,6 +8,10 @@ on:
     paths: ['packaging/**', 'flake.nix', 'scripts/**', '.github/workflows/packaging.yml']
   workflow_dispatch:
 
+# Least privilege: the GITHUB_TOKEN is read-only even when CI runs.
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Shell & desktop lint

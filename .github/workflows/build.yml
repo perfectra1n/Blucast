@@ -8,6 +8,10 @@ on:
     paths: ['app/**', 'Containerfile', '.github/workflows/build.yml']
   workflow_dispatch:
 
+# Least privilege: the GITHUB_TOKEN is read-only even when CI runs.
+permissions:
+  contents: read
+
 # Repo configuration for the gated full build (Settings → Secrets and variables
 # → Actions):
 #   secret  NGC_CLI_API_KEY   — your NGC personal API key (already added)
